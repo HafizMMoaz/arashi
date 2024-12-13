@@ -243,8 +243,6 @@ void gameRoomCP()
             }
         }
 
-        
-
         gravity();
         enemies(2);
         moveBullet();
