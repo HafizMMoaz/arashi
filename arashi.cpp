@@ -31,6 +31,7 @@ void playerAttack();
 void playerRun();
 void gravity();
 bool shouldJump();
+void playerHealth();
 
 
 int pX = 50, pY = 29; // player coordinates
@@ -39,10 +40,10 @@ int camX = 0, camY = 0; // camera coordinates
 //no. of rooms , num of enemies each room, num of bullets, goalLocation ,enemy locations a(x,y) , b(x,y), c(x,y), d(x,y)
 int levels[4][13] = {
    //NR, NE, NB, GX,GY,  AX AY  BX  BY  CX cY dx dy
-    {4,  5,  30, 4, 90,  20, 28, 80, 28, 20, 18, 18, 6 },
-    {4,  5,  30, 4, 90,  80, 6,  85, 18, 18, 18, 85, 28 },
-    {6,  8,  50, 4, 90,  18, 18, 89, 18, 20, 6,  18, 28 },
-    {8,  12, 100,4, 90,  89, 28, 29, 28, 18, 18, 85, 18 }
+    {4,  5,  100, 4, 90,  20, 28, 80, 28, 20, 18, 18, 6 },
+    {4,  5,  100, 4, 90,  80, 6,  85, 18, 18, 18, 85, 28 },
+    {6,  8,  150, 4, 90,  18, 18, 89, 18, 20, 6,  18, 28 },
+    {8,  12, 200,4, 90,  89, 28, 29, 28, 18, 18, 85, 18 }
 };
 
 /* enemy functions */
@@ -53,6 +54,7 @@ void generateEnemy();
 void printEnemy(int,int,int,int,int);
 void removeEnemy(int,int,int,int,int);
 void enemies(int);
+void killEnemy(int);
 
 int bulletX[200], bulletY[200], bulletCount = 0, bulletDir[200], bulletOwner[200];
 bool isBulletActive[200];
@@ -70,10 +72,11 @@ string activeScreen, gameState, playerState = "idle", playerDir="left"; // playe
 int shopProducts[] = {};
 
 int coins = 100, currentLevel = 1, currentRoom = 0, enemiesKilled = 0, health = 100, score = 0, bulletsLeft = 100, lives = 3, currentRoomKills = 0;
+bool isGameOver = false, isWin = false;
 
 main()
 {
-    //PlaySound(TEXT("G:\\University\\Projects\\Game-V-1.0\\others\\audio.wav"), NULL, SND_ASYNC | SND_LOOP);
+   // PlaySound(TEXT("G:\\University\\Projects\\Game-V-1.0\\audios\\bg.waw"), NULL, SND_ASYNC | SND_LOOP);
     screenSetup(105,40,120,40, FALSE);
     mainScreen();
 }
@@ -148,6 +151,7 @@ void mainMenu(int x,int y,int option)
 }
 void gameRoomCP()
 {
+    //PlaySound(TEXT("G:\\University\\Projects\\Game-V-1.0\\audios\\bg.waw"), NULL, SND_ASYNC | SND_LOOP);
     int level = currentLevel;
     int room = currentRoom;
     bulletsLeft = levels[level][2];
@@ -160,7 +164,7 @@ void gameRoomCP()
     playerPrint();
     Sleep(100);
     
-    while(true){
+    while(!isGameOver){
         if(GetAsyncKeyState('P')){
             while(true)
             {
@@ -211,7 +215,11 @@ void gameRoomCP()
             generateEnemy();    
         }
 
-        if(count == 25)
+        if(count == 15)
+        {
+            enemies(3);
+        }
+        else if(count == 25)
         {
             enemies(1);
         }
@@ -221,11 +229,47 @@ void gameRoomCP()
         }
         count++;
 
+        if(health == 0)
+        {
+            if(lives != 0){
+                lives--;
+                health = 100;
+                updateBoard();
+            }
+            else
+            {
+                isGameOver = true;
+                isWin = false;
+            }
+        }
+
+        
+
         gravity();
+        enemies(2);
         moveBullet();
         playerPrint();
         Sleep(1);
+
+        if(score == 40)
+        {
+            //isWin = true;
+            //isGameOver = true;
+        }
     }
+    /* if(currentLevel < 4)
+    {
+        if(isWin)
+        {
+            if( room < maxRooms)
+                currentRoom++;
+            else
+            {
+                currentRoom = 0;
+                currentLevel++;
+            }
+        }
+    } */
     mainScreen();
 }
 void playerJump()
@@ -765,27 +809,56 @@ void enemies(int action)
                     printEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
                 }
             }
-
-            if(!enemyType[i])
+            else if(action == 2)
             {
-                if(pY - 1 == enemyY[i])
+                char next;
+                if(getCharAtxy(enemyX[i] - 1, enemyY[i] + 3) == 'x'){
+                    killEnemy(i);
+                    removeEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                }
+                else if(playerState == "attack")
                 {
-                    if(pX < enemyX[i]){
-                        removeEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
-                        enemyDir[i] = 0;
-                        printEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
-                    }
-                    else
+                    for(int x = 0; x < 12; x++)
                     {
-                        removeEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
-                        enemyDir[i] = 1;
-                        printEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                        for(int j = 0; j < 8; j++)
+                        {
+                            if(getCharAtxy(enemyX[x], enemyY[x]) == (char)195){
+                                killEnemy(i);
+                                removeEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                                break;
+                            }
+                        }
                     }
-                    generateBullet("enemy", enemyDir[i], enemyX[i], enemyY[i]);
+                } 
+            }
+            else if(action == 3)
+            {
+                if(!enemyType[i])
+                {
+                    if(pY - 1 == enemyY[i])
+                    {
+                        if(pX < enemyX[i]){
+                            removeEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                            enemyDir[i] = 0;
+                            printEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                        }
+                        else
+                        {
+                            removeEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                            enemyDir[i] = 1;
+                            printEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
+                        }
+                        generateBullet("enemy", enemyDir[i], enemyX[i], enemyY[i]);
+                    }
                 }
             }
+            
         }
     }
+}
+void killEnemy(int i)
+{
+    isEnemyAlive[i] = false;
 }
 void generateBullet(string type, int dir, int x, int y)
 {
@@ -793,12 +866,14 @@ void generateBullet(string type, int dir, int x, int y)
     {
         
         bulletX[bulletCount] = dir ? x + 12 : x - 1;
-        bulletY[bulletCount] = y + 3;
+        bulletY[bulletCount] = y + 2;
+        bulletOwner[bulletCount] = 1;
         bulletsLeft--;
         updateBoard();
     }else{
         bulletX[bulletCount] = dir ? x + 9 : x - 1;
         bulletY[bulletCount] = y + 4;
+        bulletOwner[bulletCount] = 0;
     }
     isBulletActive[bulletCount] = true;
     bulletDir[bulletCount] = dir; 
@@ -838,6 +913,20 @@ void moveBullet()
             {
                 eraseBullet(bulletX[j], bulletY[j]);
                 makeBulletInactive(j);
+                if(bulletOwner[j])
+                {
+                    if(nextChar == '/' || nextChar == '\\'){
+                        score += 10;
+                        updateBoard();
+                    }
+                }
+                else
+                {
+                    if(nextChar == '(' || nextChar == ')'){
+                        health -= 10;
+                        updateBoard();
+                    }
+                }
             }
             else
             {
