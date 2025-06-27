@@ -69,8 +69,6 @@ void makeBulletInactive(int idx);
 
 string activeScreen, gameState, playerState = "idle", playerDir="left"; // player states
 
-int shopProducts[] = {};
-
 int coins = 100, currentLevel = 1, currentRoom = 0, enemiesKilled = 0, health = 100, score = 0, bulletsLeft = 100, lives = 3, currentRoomKills = 0;
 bool isGameOver = false, isWin = false;
 
