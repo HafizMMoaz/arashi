@@ -76,6 +76,7 @@
 - Sound (beep) support for hits
 - Save/load game feature
 - Score tracking
+- Add colorful ui and characters 
 
 ## 📚 Acknowledgements
 
