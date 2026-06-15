@@ -33,11 +33,17 @@
   - Lives system with respawn logic
   - Room-based level design for progression
 
+- ✅ **Combat:**
+  - Fire to kill enemies; shield-bearing enemies block shots to their front, so
+    flank them or use a melee sword swing (Down/S) up close
+  - Melee swing damages enemies within reach
+
+- ✅ **Endless Progression:**
+  - Clear a stage's enemies to advance to the next, forever, with rising difficulty
+  - Stages load from editable `stages/*.txt` maps; wider maps scroll left/right
+
 - 🔄 **Random Elements:**
   - Randomized enemy spawn/movement for replayability
-
-- 🔜 **To-Do:**
-  - Damage system for ninja's melee attacks (currently under development)
 
 ---
 
@@ -53,13 +59,19 @@
 
 ## 🧪 How to Run
 
-1. **Compile the project** using a C++ compiler:
+1. **Compile the project** using a C++ compiler (link `winmm` for background audio):
    ```bash
-   g++ main.cpp -o arashi
+   g++ arashi.cpp -o arashi -lwinmm
+   ```
+   In VS Code, the build task (Ctrl+Shift+B / F5) already passes `-lwinmm`.
 
 2. **Run**
    ```bash
    arashi
+   ```
+
+> On first launch the game creates `stages/stage1.txt`–`stage3.txt` if they
+> don't exist. Edit those files to change the maps — see `stages/README.txt`.
 
 ---
 
@@ -71,12 +83,10 @@
 
 ## 📈 Future Improvements
 
-- Implement attack damage on melee
 - Add boss fights
-- Sound (beep) support for hits
-- Save/load game feature
-- Score tracking
-- Add colorful ui and characters 
+- Smooth pixel-by-pixel scrolling (currently section/screen-based)
+- Sound effects for hits (background music is implemented via `winmm`)
+- Save/load progress between runs
 
 ## 📚 Acknowledgements
 
