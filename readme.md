@@ -12,6 +12,10 @@
 **Arashi** is a simple CLI-based action game built in C++, featuring a ninja character with dynamic movements and interactions. Designed as a Programming Fundamentals course project, Arashi showcases core concepts like OOP, control structures, animation using CLI characters, and basic game logic.
 
 ![](./arashi.png)
+![](./screenshots/1.png)
+![](./screenshots/2.png)
+![](./screenshots/3.png)
+![](./screenshots/4.png)
 
 ---
 
