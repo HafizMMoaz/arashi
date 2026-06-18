@@ -6,6 +6,7 @@
 #include <string>
 #include <cstdio>
 #include <algorithm>
+#include <cstdlib>
 using namespace std;
 #pragma comment(lib, "winmm.lib")
 
@@ -19,6 +20,7 @@ void playBackgroundMusic();
 /* screens */
 void mainMenu(int,int,int);
 void mainScreen();
+void drawMainScreen(int);
 void gameRoomCP();
 void aboutDeveloperScreen(int,int);
 
@@ -30,6 +32,7 @@ void updateBoard();
 /* player functions */
 void playerPrint();
 void removePlayer();
+void restoreField(int sx, int sy, int len);
 void playerJump();
 void playerAttack();
 void playerRun();
@@ -58,14 +61,38 @@ int section      = 0;         // which slice is on screen
 int stage        = 1;         // current stage (endless: 1, 2, 3, ...)
 int stageKillTarget = 5;      // kills needed to clear the current stage
 
+/* ---- endless run ----
+   The world is generated one screen at a time. Walking off the right edge
+   builds a brand-new screen (ground, trees, clouds, ramps, gems) forever.
+   Ramps are raised solid blocks the player jumps onto; their tops are stored
+   so enemies can be spawned standing on them.                                */
+int  runDistance = 0;         // how many screens travelled (endless progress)
+const int MAX_RAMPS = 8;
+int  rampX[MAX_RAMPS];        // left column of each ramp
+int  rampW[MAX_RAMPS];        // width of each ramp
+int  rampTop[MAX_RAMPS];      // field row of each ramp's top solid surface
+int  rampCount = 0;           // ramps on the current screen
+
 void loadStage(int s);
 void buildDefaultField(int s);
+void buildEndlessField();
+void startEndless();
+void nextScreen();
 void saveField(int idx);
 void renderField();
 void resetActors();
 void startStage(int s);
 bool changeSection(int delta);
 void banner(const string &msg);
+void introCutscene();
+void storyCutscene();
+void drawGirl(int,int);
+void drawHeart(int,int);
+void drawRing(int,int);
+void decorateField(int s);
+bool isSolidTile(char c);
+bool enemySpaceFree(int idx, int x, int y);
+void collectGems();
 
 /* enemy functions */
 const int maxEnemies = 12;
@@ -81,9 +108,9 @@ int  enemyHitIndex(int x, int y);// alive enemy whose body box covers (x,y), els
 void meleeAttack();              // resolve a sword swing against nearby enemies
 int  freeEnemySlot();            // reusable (dead) enemy slot, else -1
 
-int bulletX[200], bulletY[200], bulletCount = 0, bulletDir[200], bulletOwner[200];
-bool isBulletActive[200];
-const int maxBullets = 200;
+int bulletX[500], bulletY[500], bulletCount = 0, bulletDir[500], bulletOwner[500];
+bool isBulletActive[500];
+const int maxBullets = 500;
 
 void generateBullet(string, int, int, int);
 void eraseBullet(int x, int y);
@@ -92,8 +119,19 @@ void moveBullet();
 void makeBulletInactive(int idx);
 int  freeBulletSlot();           // index of a reusable inactive bullet, else -1
 bool hitsPlayer(int x, int y);   // does (x,y) fall inside the player's body box
+bool blockedByEnemy(int newPX, int dir);  // would a step into newPX hit an enemy?
 
 DWORD lastShotTime = 0;          // for fire-rate cooldown
+DWORD lastSpawnTime = 0;         // throttles how fast new enemies appear
+DWORD lastHitTime = 0;           // cooldown between hits the player can take
+DWORD lastRefillTime = 0;        // debounce for the ammo-refill key
+
+const int HIT_DAMAGE = 10;       // health lost per bullet / enemy touch (out of 100)
+
+// Ammo refill: press R to trade coins for bullets (see the play loop).
+const int REFILL_COST    = 20;   // coins spent per refill
+const int REFILL_AMOUNT  = 50;   // bullets gained per refill
+const int MAX_BULLETS_HELD = 999;// cap so the HUD field never overflows
 
 
 
@@ -104,67 +142,237 @@ bool isGameOver = false, isWin = false;
 
 main()
 {
-    screenSetup(105,40,120,40, FALSE);
+    srand((unsigned)GetTickCount());
+    screenSetup(VIEW_W, 40, VIEW_W, 40, FALSE);   // buffer == window: no clipping, no scrollbars
     playBackgroundMusic();
-    mainScreen();
+    mainScreen();           // the intro now plays when "New Game" is chosen
 }
+
+void introCutscene()
+{
+    system("cls");
+    gotoxy(20,6);  cout << "ARASHI";
+    gotoxy(20,8);  cout << "A ninja sets out to rescue the girl he loves.";
+    gotoxy(20,10); cout << "She has been captured by a dark force.";
+    gotoxy(20,11); cout << "He crosses broken tracks, traps, enemies, and ruins to reach her.";
+    gotoxy(20,12); cout << "When he wins the final battle, he frees her and they marry.";
+    gotoxy(20,14); cout << "Press SPACE to begin.";
+    while(!(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_RETURN)))
+        Sleep(30);
+    while(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_RETURN))
+        Sleep(30);
+}
+
+void storyCutscene()
+{
+    system("cls");
+
+    int heroX = 12, girlX = 95, charY = 9;   // sprite top-left positions
+
+    setColor(14);
+    gotoxy(48,2);  cout << "------ ARASHI ------";
+    setColor(7);
+
+    // The real in-game hero (facing right) and a matching girl (facing left).
+    setColor(11); gameHeaderCharacter(heroX, charY);   // real hero sprite
+    setColor(13); drawGirl(girlX, charY);              // girl in the same style
+    setColor(7);
+    Sleep(1100);
+
+    // They walk toward each other to meet in the middle.
+    for(int r=0; r<7; r++){
+        gotoxy(heroX,   charY+r); cout << "                ";
+        gotoxy(girlX-2, charY+r); cout << "              ";
+    }
+    heroX = 40; girlX = 66;
+    setColor(11); gameHeaderCharacter(heroX, charY);
+    setColor(13); drawGirl(girlX, charY);
+    setColor(7);
+
+    int mx[8]  = {38, 46, 54, 62, 70, 42, 58, 74};   // columns of the floating hearts
+    int mph[8] = { 0,  2,  4,  1,  3,  5,  2,  4};    // their starting heights
+    const int aTop = 3, aBot = 7;                     // open-air band above the couple
+    int aspan = aBot - aTop + 1;
+    for(int frame = 0; frame < 16; frame++){
+        // the big heart beats: red on even frames, pink on odd
+        setColor((frame % 2) ? 12 : 13);
+        drawHeart(55, charY);
+
+        // little hearts drift upward through the air above them
+        for(int yy = aTop; yy <= aBot; yy++){ gotoxy(36, yy); cout << string(42,' '); }
+        for(int i = 0; i < 8; i++){
+            int yy = aBot - ((frame + mph[i]) % aspan);
+            setColor((i % 2) ? 13 : 12);
+            gotoxy(mx[i], yy); cout << (char)3;
+        }
+        Sleep(160);
+    }
+    setColor(7);
+    for(int yy = aTop;  yy <= aBot;     yy++){ gotoxy(36, yy); cout << string(42,' '); }
+    for(int yy = charY; yy <= charY+5;  yy++){ gotoxy(55, yy); cout << "         "; } // clear big heart
+    Sleep(300);
+
+    // The enemy attacks.
+    setColor(12);
+    gotoxy(56, charY+2); cout << " ";                     // the heart breaks away
+    gotoxy(54, charY+1); cout << "<* * *";                // shots streak at the hero
+    gotoxy(40, charY-2); cout << "                                        ";
+    gotoxy(40, charY-2); cout << "An enemy fires at the hero from the shadows!";
+    setColor(7);
+    Sleep(1200);
+
+    // A cage drops over the girl and traps her.
+    setColor(8);
+    gotoxy(girlX-2, charY-1); cout << "+-+-+-+-+-+-+-+";
+    for(int r=0; r<7; r++){
+        gotoxy(girlX-2,  charY+r); cout << "|";
+        gotoxy(girlX+11, charY+r); cout << "|";
+    }
+    gotoxy(girlX-2, charY+7); cout << "+-+-+-+-+-+-+-+";
+    setColor(13); drawGirl(girlX, charY);                 // still visible behind the bars
+    setColor(7);
+    gotoxy(girlX-6, charY+9); cout << "A cage drops and traps her!";
+    Sleep(1400);
+
+    // ---- Happy ending: the hero frees her and a wedding ring appears. ----
+    system("cls");
+    setColor(14);
+    gotoxy(48,1);  cout << "==== Happy Ending ====";
+    setColor(7);
+    gotoxy(20,3);  cout << "The hero fights through every enemy and sets her free.";
+
+    int hy = 16, hHeroX = 46, hGirlX = 61;    // the two reunited, side by side
+    setColor(11); gameHeaderCharacter(hHeroX, hy);
+    setColor(13); drawGirl(hGirlX, hy);
+
+    // A sparkling wedding ring appears above them, with hearts dancing around.
+    drawRing(52, 5);
+    int cx[8]  = {42, 50, 58, 66, 74, 46, 62, 70};
+    int cph[8] = { 0,  2,  1,  3,  0,  2,  1,  3};
+    const int cTop = 12, cBot = 14;           // heart band between ring and couple
+    int cspan = cBot - cTop + 1;
+    for(int frame = 0; frame < 16; frame++){
+        // twinkles around the ring (they self-clear on alternate frames)
+        setColor(15);
+        gotoxy(50, 6);  cout << ((frame % 2) ? "+" : " ");
+        gotoxy(64, 7);  cout << ((frame % 2) ? " " : "+");
+        gotoxy(51, 10); cout << ((frame % 2) ? "." : " ");
+        // hearts drifting upward between the ring and the couple
+        for(int yy = cTop; yy <= cBot; yy++){ gotoxy(40, yy); cout << string(38,' '); }
+        for(int i = 0; i < 8; i++){
+            int yy = cBot - ((frame + cph[i]) % cspan);
+            setColor((i % 2) ? 12 : 13);
+            gotoxy(cx[i], yy); cout << (char)3;
+        }
+        drawRing(52, 5);                      // keep the ring crisp above the hearts
+        Sleep(170);
+    }
+    setColor(7);
+    for(int yy = cTop; yy <= cBot; yy++){ gotoxy(40, yy); cout << string(38,' '); }
+
+    setColor(14);
+    gotoxy(40, hy+8);  cout << "They marry, and live happily ever after.";
+    gotoxy(54, hy+10); cout << (char)3 << "  THE  END  " << (char)3;
+    setColor(11);
+    gotoxy(50, hy+12); cout << "Press SPACE to return.";
+    setColor(7);
+    while(!(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_RETURN)))
+        Sleep(30);
+    while(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_RETURN))
+        Sleep(30);
+}
+
+void drawGirl(int x, int y)
+{
+    gotoxy(x,y);   cout << "  _____   ";
+    gotoxy(x,y+1); cout << " /__   \\  ";
+    gotoxy(x,y+2); cout << " |" << (char)248 << "v" << (char)248 << " \\|  ";
+    gotoxy(x,y+3); cout << " (__@_)   ";
+    gotoxy(x,y+4); cout << "  /|^|\\   ";
+    gotoxy(x,y+5); cout << " //   \\\\  ";
+    gotoxy(x,y+6); cout << "  J   L   ";
+}
+
+void drawHeart(int x, int y)
+{
+    gotoxy(x,y);   cout << " *** *** ";
+    gotoxy(x,y+1); cout << "*********";
+    gotoxy(x,y+2); cout << " ******* ";
+    gotoxy(x,y+3); cout << "  *****  ";
+    gotoxy(x,y+4); cout << "   ***   ";
+    gotoxy(x,y+5); cout << "    *    ";
+}
+
+void drawRing(int x, int y)
+{
+    setColor(11); gotoxy(x,y);   cout << "      __";
+    setColor(11); gotoxy(x,y+1); cout << "     /  \\";
+    setColor(11); gotoxy(x,y+2); cout << "     \\  /";
+    setColor(11); gotoxy(x,y+3); cout << "      \\/";
+    setColor(14); gotoxy(x,y+4); cout << "   .-'  '-.";
+    setColor(14); gotoxy(x,y+5); cout << "  (        )";
+    setColor(14); gotoxy(x,y+6); cout << "   '-.__.-'";
+}
+
 void playBackgroundMusic()
 {
-    // Resolve audios\bg.wav relative to the executable so it plays no matter
-    // what the current working directory is when the game is launched.
     char exePath[MAX_PATH];
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     string dir = exePath;
     size_t slash = dir.find_last_of("\\/");
     dir = (slash == string::npos) ? "." : dir.substr(0, slash);
     string wav = dir + "\\audios\\bg.wav";
-
-    // SND_FILENAME = treat the string as a path; ASYNC = don't block; LOOP = repeat.
-    if(!PlaySound(wav.c_str(), NULL, SND_FILENAME | SND_ASYNC | SND_LOOP))
+    if(!PlaySoundA(wav.c_str(), NULL, SND_FILENAME | SND_ASYNC | SND_LOOP))
     {
-        // Fall back to a path relative to the current directory.
-        PlaySound("audios\\bg.wav", NULL, SND_FILENAME | SND_ASYNC | SND_LOOP);
+        PlaySoundA("audios\\bg.wav", NULL, SND_FILENAME | SND_ASYNC | SND_LOOP);
     }
 }
-void mainScreen()
+
+void drawMainScreen(int option)
 {
     system("cls");
-    int option = 0;
     gameHeaderCharacter(5,5);
     gameHeader(22,3);
     gameHeaderCharacter(70,5);
     mainMenu(3,15,option);
     gotoxy(50,16);cout <<"---- Instructions ----";
-    gotoxy(50,18);cout << "Press ["<< (char)24 <<"] or [W] For Upword Navigation";
-    gotoxy(50,19);cout << "Press ["<< (char)25 <<"] or [S] For Downword Navigation";
+    gotoxy(50,18);cout << "Press [UP] or [W] For Upword Navigation";
+    gotoxy(50,19);cout << "Press [DOWN] or [S] For Downword Navigation";
     gotoxy(50,20);cout << "Press [SPACE] or [Q] For Selecting Option";
+}
+void mainScreen()
+{
+    int option = 0;
+    drawMainScreen(option);
     while(true){
         if(GetAsyncKeyState(VK_DOWN) || GetAsyncKeyState('S')){
-            if(option < 6){
+            if(option < 6)
                 option++;
-            }
             mainMenu(3,15,option);
-            cout << option;
         }
         else if(GetAsyncKeyState(VK_UP) || GetAsyncKeyState('W')){
-            if(option > 0){
+            if(option > 0)
                 option--;
-            }
             mainMenu(3,15,option);
-            cout << option;
         }
         else if(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState('Q')){
             if(option == 0){
+                introCutscene();        // story intro plays before a new game
                 gameRoomCP();
+            }else if(option == 3){
+                storyCutscene();
             }else if(option == 5){
-                Sleep(200);
                 aboutDeveloperScreen(3,15);
-            }
-            else if(option == 6){
+            }else if(option == 6){
                 exit(0);
             }
+            // back from a sub-screen: redraw the menu, then wait for the
+            // select key to be released so we don't instantly re-trigger it
+            drawMainScreen(option);
+            while(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState('Q') || GetAsyncKeyState(VK_RETURN))
+                Sleep(30);
         }
-        Sleep(200);
+        Sleep(120);
     }
 }
 void mainMenu(int x,int y,int option)
@@ -200,7 +408,7 @@ void gameRoomCP()
     int count = 0;
     isGameOver = false;
     system("cls");
-    startStage(1);                  // load stage 1, draw the field, place the player
+    startEndless();                 // build the first endless screen, place the player
     Sleep(100);
 
     while(!isGameOver){
@@ -213,6 +421,7 @@ void gameRoomCP()
                     gotoxy(50, 4); cout << "[RESUMED]";
                     break;
                 }
+                Sleep(50);
             }
             Sleep(90);
             gotoxy(50, 4); cout << "         ";
@@ -228,21 +437,19 @@ void gameRoomCP()
             playerJump();
         }
 
-        // move right / scroll to the next section at the screen edge
+        // move right / at the screen edge, run on into a fresh endless screen
         if(GetAsyncKeyState(VK_RIGHT) || GetAsyncKeyState('D')){
             playerDir = "right";
-            if(pX <= 104 && getCharAtxy(pX+15, pY + 3) == ' ')
+            if(pX <= 104 && !isSolidTile(getCharAtxy(pX+15, pY + 3)) && !blockedByEnemy(pX + 1, 1))
                 playerRun();
-            else if(pX > 104 && section < sectionCount - 1)
-                changeSection(+1);
+            else if(pX > 104)
+                nextScreen();       // endless: the world keeps going to the right
         }
-        // move left / scroll to the previous section at the screen edge
+        // move left (you can't go back past the left edge of the screen)
         else if(GetAsyncKeyState(VK_LEFT) || GetAsyncKeyState('A')){
             playerDir = "left";
-            if(pX >= 3 && getCharAtxy(pX-3, pY + 3) == ' ')
+            if(pX >= 3 && !isSolidTile(getCharAtxy(pX-3, pY + 3)) && !blockedByEnemy(pX - 1, 0))
                 playerRun();
-            else if(pX < 4 && section > 0)
-                changeSection(-1);
         }
 
         // attack input
@@ -257,10 +464,32 @@ void gameRoomCP()
             lastShotTime = GetTickCount();
         }
 
-        // keep up to 4 enemies on screen until the stage's kill quota is in sight
-        if(activeEnemies < 4 && (currentRoomKills + activeEnemies) < stageKillTarget)
+        // refill ammo: spend coins for bullets (debounced so a held key buys once)
+        if(GetAsyncKeyState('R') && GetTickCount() - lastRefillTime > 300)
+        {
+            lastRefillTime = GetTickCount();
+            if(coins >= REFILL_COST)
+            {
+                coins -= REFILL_COST;
+                bulletsLeft += REFILL_AMOUNT;
+                if(bulletsLeft > MAX_BULLETS_HELD) bulletsLeft = MAX_BULLETS_HELD;
+                updateBoard();
+                gotoxy(50, 4); cout << "+" << REFILL_AMOUNT << " AMMO";
+            }
+            else
+            {
+                gotoxy(50, 4); cout << "NEED " << REFILL_COST << " COINS";
+            }
+            Sleep(120);
+            restoreField(50, 4, 14);    // wipe the flash without blanking the field
+        }
+
+        // keep at most 2 enemies on screen, and only let a new one appear every
+        // 1.5s, so the player isn't swarmed (endless: spawning never stops)
+        if(activeEnemies < 2 && GetTickCount() - lastSpawnTime > 1500)
         {
             generateEnemy();
+            lastSpawnTime = GetTickCount();
         }
 
         if(count == 15)
@@ -277,6 +506,30 @@ void gameRoomCP()
         }
         count++;
 
+        collectGems();
+
+        // Enemy melee: touching an enemy (its sword/body) costs 10% health, but
+        // only once every 0.8s so contact drains gradually instead of killing.
+        if(GetTickCount() - lastHitTime > 800)
+        {
+            for(int i = 0; i < enemyCount; i++)
+            {
+                if(!isEnemyAlive[i])
+                    continue;
+                bool overlap = !(pX + 12 < enemyX[i] - 1 || pX - 1 > enemyX[i] + 12 ||
+                                 pY + 6  < enemyY[i]     || pY     > enemyY[i] + 7);
+                if(overlap)
+                {
+                    health -= HIT_DAMAGE;
+                    if(health < 0) health = 0;
+                    lastHitTime = GetTickCount();
+                    updateBoard();
+                    playerPrint();
+                    break;
+                }
+            }
+        }
+
         if(health <= 0)
         {
             if(lives != 0){
@@ -289,14 +542,6 @@ void gameRoomCP()
                 isGameOver = true;
                 isWin = false;
             }
-        }
-
-        // stage cleared -> advance forever, raising the difficulty each time
-        if(currentRoomKills >= stageKillTarget)
-        {
-            banner("STAGE " + to_string(stage) + " CLEARED!");
-            startStage(stage + 1);
-            count = 0;
         }
 
         gravity();
@@ -312,7 +557,7 @@ void gameRoomCP()
     isGameOver = false; isWin = false;
     health = 100; lives = 3; score = 0; coins = 100;
     enemiesKilled = 0; currentRoomKills = 0;
-    mainScreen();
+    // return to the caller (mainScreen) which redraws the menu
 }
 // One reusable banner in the middle of the screen, then a short pause.
 void banner(const string &msg)
@@ -345,6 +590,94 @@ void startStage(int s)
     loadStage(stage);
     renderField();
     pX = 50; pY = GROUND_TOP + 1;
+    playerState = "idle"; playerDir = "right";
+    playerPrint();
+    updateBoard();
+}
+// Build one screen of the endless Mario-style world: ground, clouds, trees,
+// ramps (raised solid blocks) and gems. Ramp tops are recorded so enemies can
+// be placed standing on them.
+void buildEndlessField()
+{
+    int w = VIEW_W;
+
+    for(int r = 0; r <= 32; r++)            // open sky
+        fieldRows[r] = string(w, ' ');
+    fieldRows[33] = string(w, '=');         // ground surface
+    fieldRows[34] = string(w, '#');         // dirt
+    fieldRows[35] = string(w, '#');
+    fieldRows[36] = string(w, '-');         // bottom border
+
+    fieldWidth   = w;
+    sectionCount = 1;
+    section      = 0;
+    rampCount    = 0;
+
+    // clouds drifting in the sky (decorative, non-solid)
+    for(int x = 6; x < w - 10; x += 16 + rand() % 12)
+        if(rand() % 2)
+        {
+            int cy = 2 + rand() % 3;
+            fieldRows[cy][x]   = '('; fieldRows[cy][x+1] = '~';
+            fieldRows[cy][x+2] = '~'; fieldRows[cy][x+3] = ')';
+        }
+
+    // trees along the ground: leafy top above head height, trunk to the ground
+    for(int x = 10; x < w - 8; x += 18 + rand() % 12)
+        if(rand() % 2)
+        {
+            fieldRows[25][x+1]='('; fieldRows[25][x+2]='@'; fieldRows[25][x+3]='@'; fieldRows[25][x+4]=')';
+            fieldRows[26][x+1]='('; fieldRows[26][x+2]='@'; fieldRows[26][x+3]='@'; fieldRows[26][x+4]=')';
+            for(int rr = 27; rr <= 32; rr++){ fieldRows[rr][x+2]='|'; fieldRows[rr][x+3]='|'; }
+        }
+
+    // ramps: raised solid blocks at least 4 tall, so the player must jump them.
+    // (drawn after the trees so a ramp is always fully solid). Tops are stored.
+    for(int x = 26; x < w - 30; x += 24 + rand() % 14)
+    {
+        if(rand() % 2 == 0 || rampCount >= MAX_RAMPS)
+            continue;
+        int h   = 4 + rand() % 2;           // 4..5 rows tall
+        int top = 33 - h;                   // field row of the ramp's top surface
+        int rw  = 14 + rand() % 6;          // 14..19 wide (room to stand on)
+        if(x + rw > w - 18) rw = (w - 18) - x;
+        if(rw < 12) continue;
+        for(int rr = top; rr <= 32; rr++)
+            for(int xx = x; xx < x + rw; xx++)
+                fieldRows[rr][xx] = '=';
+        rampX[rampCount] = x; rampW[rampCount] = rw; rampTop[rampCount] = top;
+        rampCount++;
+        fieldRows[top - 1][x + rw / 2] = '$';   // a gem rewards the climb
+    }
+
+    // a scatter of ground-level gems
+    for(int x = 14; x < w - 12; x += 19)
+        if(rand() % 2) fieldRows[27][x] = '$';
+}
+// Begin a fresh endless run from the very first screen.
+void startEndless()
+{
+    stage = 1; section = 0; runDistance = 0;
+    currentLevel = 1; currentRoom = 1; currentRoomKills = 0;
+    bulletsLeft = 120;
+    resetActors();
+    buildEndlessField();
+    renderField();
+    pX = 6; pY = GROUND_TOP + 1;             // enter from the left edge
+    playerState = "idle"; playerDir = "right";
+    playerPrint();
+    updateBoard();
+}
+// Run off the right edge into a brand-new screen -- the world never ends.
+void nextScreen()
+{
+    runDistance++;
+    currentRoom  = runDistance + 1;          // HUD "Room" = how far you've run
+    currentLevel = 1 + runDistance / 5;      // difficulty tier creeps up
+    resetActors();                           // old screen's enemies/bullets are gone
+    buildEndlessField();
+    renderField();
+    pX = 6; pY = GROUND_TOP + 1;             // step in from the left of the new screen
     playerState = "idle"; playerDir = "right";
     playerPrint();
     updateBoard();
@@ -383,34 +716,34 @@ void playerJump()
 }
 bool shouldJump(){
     for(int i = 0 ; i <= 14 ; i++){
-        if(getCharAtxy(pX + i, pY - 1) != ' ')
+        if(isSolidTile(getCharAtxy(pX + i, pY - 1)))
             return false;
     }
     return true;
 }
 void gravity()
 {
-    if(getCharAtxy(pX, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX, pY + 7)))
         return;
-    if(getCharAtxy(pX + 1, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 1, pY + 7)))
         return;
-    if(getCharAtxy(pX + 2, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 2, pY + 7)))
         return;
-    if(getCharAtxy(pX + 3, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 3, pY + 7)))
         return;
-    if(getCharAtxy(pX + 4, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 4, pY + 7)))
         return;
-    if(getCharAtxy(pX + 5, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 5, pY + 7)))
         return;
-    if(getCharAtxy(pX + 6, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 6, pY + 7)))
         return;
-    if(getCharAtxy(pX + 7, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 7, pY + 7)))
         return;
-    if(getCharAtxy(pX + 8, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 8, pY + 7)))
         return;
-    if(getCharAtxy(pX + 9, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 9, pY + 7)))
         return;
-    if(getCharAtxy(pX + 10, pY + 7) != ' ')
+    if(isSolidTile(getCharAtxy(pX + 10, pY + 7)))
         return;
     
     removePlayer();
@@ -463,6 +796,7 @@ void playerRun()
 void playerPrint()
 {
     /* printing player according to there direction and states */
+    setColor(10);               // ninja drawn in bright green
     if(playerDir == "right")
     {
         if(playerState == "idle")
@@ -548,45 +882,57 @@ void playerPrint()
             gotoxy(pX-13,pY+3);cout << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)195 << (char)196 << " " << (char)239 << "  " << (char)153 << " " << (char)240 << (char)240 << ")";
             gotoxy(pX,pY+4);cout << " >    \\ R";
             gotoxy(pX,pY+5);cout << "(__ \\__) \\";
-            gotoxy(pX,pY+6);cout << " U     U  "; 
+            gotoxy(pX,pY+6);cout << " U     U  ";
         }
+    }
+    setColor(7);                // back to default for everything else
+}
+// Repaint the field background across a horizontal run of cells. Erasing a
+// sprite this way (instead of blanking with spaces) keeps the solid tiles a
+// ramp, platform or the ground are made of intact under it -- so swinging the
+// sword or walking across a ramp no longer punches holes through it.
+void restoreField(int sx, int sy, int len)
+{
+    int r    = sy - 3;                    // console row -> field row
+    int base = section * VIEW_W + sx;     // leftmost field column shown here
+    gotoxy(sx, sy);
+    for(int i = 0; i < len; i++)
+    {
+        int c = base + i;
+        char ch = ' ';
+        if(r >= 0 && r < FIELD_ROWS && c >= 0 && c < (int)fieldRows[r].size())
+            ch = fieldRows[r][c];
+        cout << ch;
     }
 }
 void removePlayer()
 {
-    gotoxy(pX,pY);cout << "              ";
+    restoreField(pX, pY, 14);
+    if(playerState == "attack")
+        restoreField(playerDir == "left" ? pX - 1 : pX + 14, pY, 1);
+
+    restoreField(pX, pY + 1, 14);
+    if(playerState == "attack")
+        restoreField(playerDir == "left" ? pX - 1 : pX + 14, pY + 1, 1);
+
+    restoreField(pX, pY + 2, 13);
+    if(playerState == "attack")
+        restoreField(playerDir == "left" ? pX - 1 : pX + 13, pY + 2, 1);
+
+    restoreField(pX, pY + 3, 13);
     if(playerState == "attack"){
         if(playerDir == "left")
-            gotoxy(pX-1,pY);
-        cout << " ";
+            restoreField(pX - 13, pY + 3, 14);   // sword reaches left of the body
+        else
+            restoreField(pX + 13, pY + 3, 12);   // sword reaches right of the body
     }
-    gotoxy(pX,pY+1);cout << "              ";
-    if(playerState == "attack"){
-        if(playerDir == "left")
-            gotoxy(pX-1,pY+1);
-        cout << " ";
-    }
-    gotoxy(pX,pY+2);cout << "             ";
-    if(playerState == "attack"){
-        if(playerDir == "left")
-            gotoxy(pX-1,pY+2);
-        cout << " ";
-    }
-    gotoxy(pX,pY+3);cout << "             ";
-    if(playerState == "attack"){
-        if(playerDir == "left"){
-            gotoxy(pX-13,pY+3);
-            cout << "              ";
-        }else{
-            cout << "            ";
-        }
-    }
-    gotoxy(pX,pY+4);cout << "             ";
-    gotoxy(pX,pY+5);cout << "             ";
-    gotoxy(pX,pY+6);cout << "           ";
+
+    restoreField(pX, pY + 4, 13);
+    restoreField(pX, pY + 5, 13);
+    restoreField(pX, pY + 6, 11);
     if(playerState == "jump"){
-        cout << "   ";     
-        gotoxy(pX,pY+7);cout << "             ";
+        restoreField(pX + 11, pY + 6, 3);
+        restoreField(pX, pY + 7, 13);
     }
 }
 int freeEnemySlot()
@@ -602,12 +948,26 @@ void generateEnemy()
     if(e == -1)
         return;                         // all slots busy this frame
 
-    int x;                              // spawn on the ground, away from the player
-    do { x = 12 + rand() % 90; } while(x > pX - 18 && x < pX + 18);
+    int x, y = GROUND_TOP;
+    if(rampCount > 0 && rand() % 2)     // sometimes the enemy stands on a ramp
+    {
+        int r = rand() % rampCount;
+        y = rampTop[r] - 5;             // feet rest on the ramp's top surface
+        int room = rampW[r] - 13;
+        x = rampX[r] + 1 + (room > 0 ? rand() % room : 0);
+    }
+    else                                // otherwise on the ground, away from the player
+    {
+        int attempts = 0;
+        do {
+            x = 12 + rand() % 90;
+            attempts++;
+        } while((x > pX - 18 && x < pX + 18) || !enemySpaceFree(-1, x, GROUND_TOP) || attempts < 20);
+    }
 
     int dir = rand() % 2;
     enemyX[e] = x;
-    enemyY[e] = GROUND_TOP;             // stands on the floor (enemyY + 8 == ground row)
+    enemyY[e] = y;                      // stands on the floor or a ramp (enemyY+8 == surface)
     enemyDir[e] = dir;
     enemyType[e] = rand() % 3;
     enemyState[e] = dir;
@@ -617,8 +977,21 @@ void generateEnemy()
         enemyCount = e + 1;
     activeEnemies++;
 }
+bool enemySpaceFree(int idx, int x, int y)
+{
+    for(int i = 0; i < enemyCount; i++)
+    {
+        if(i == idx || !isEnemyAlive[i])
+            continue;
+        if(!(x + 12 < enemyX[i] - 1 || x - 1 > enemyX[i] + 12 || y + 7 < enemyY[i] || y > enemyY[i] + 7))
+            return false;
+    }
+    return true;
+}
 void printEnemy(int x, int y, int dir, int type, int state)
 {
+    // colour the three enemy kinds so they read apart at a glance
+    setColor(type == 0 ? 12 : (type == 1 ? 14 : 9));   // 0 red, 1 yellow, 2 blue
     if(dir)
     {
         if(type == 0)
@@ -743,113 +1116,99 @@ void printEnemy(int x, int y, int dir, int type, int state)
                 gotoxy(x-9,y+4);cout << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)196 << (char)195 << (char)196 << " " << (char)239 << "  " << (char)153 << " " << (char)240 << (char)240 << ")";
                 gotoxy(x, y+5); cout << "|    >    \\";
                 gotoxy(x, y+6); cout << "|   (__ \\__)";
-                gotoxy(x, y+7); cout << "|    U    U"; 
+                gotoxy(x, y+7); cout << "|    U    U";
             }
         }
     }
+    setColor(7);                // back to default once the enemy is drawn
 }
 void removeEnemy(int x, int y, int dir, int type, int state)
 {
+    // Erase by repainting the field background (see restoreField) so an enemy --
+    // and especially its outstretched sword on the y+4 row -- doesn't blank the
+    // ramp/platform tiles it overlaps.
     if(dir)
     {
         if(type == 0)
         {
-            gotoxy(x, y);   cout << "       ";
-            gotoxy(x, y+1); cout << "        ";
-            gotoxy(x, y+2); cout << "         ";
-            gotoxy(x, y+3); cout << "        ";
-            gotoxy(x, y+4); cout << "        ";
-            gotoxy(x, y+5); cout << "       ";
-            gotoxy(x, y+6); cout << "        ";
-            gotoxy(x, y+7); cout << "       ";
+            restoreField(x, y,   7);
+            restoreField(x, y+1, 8);
+            restoreField(x, y+2, 9);
+            restoreField(x, y+3, 8);
+            restoreField(x, y+4, 8);
+            restoreField(x, y+5, 7);
+            restoreField(x, y+6, 8);
+            restoreField(x, y+7, 7);
         }
         else if(type == 1)
         {
-            gotoxy(x, y);   cout << "       ";
-            gotoxy(x, y+1); cout << "        ";
-            gotoxy(x, y+2); cout << "         ";
-            gotoxy(x, y+3); cout << "        ";
+            restoreField(x, y,   7);
+            restoreField(x, y+1, 8);
+            restoreField(x, y+2, 9);
+            restoreField(x, y+3, 8);
             if(state == 0)
-            {
-                gotoxy(x-4, y+4); cout << "                    " ;
-            }
+                restoreField(x-4, y+4, 20);
             else
-            {
-                gotoxy(x, y+4); cout << "                     " ;
-            }
-            gotoxy(x, y+5); cout << "       "; 
-            gotoxy(x, y+6); cout << "        ";
-            gotoxy(x, y+7); cout << "       ";  
-            
+                restoreField(x,   y+4, 21);
+            restoreField(x, y+5, 7);
+            restoreField(x, y+6, 8);
+            restoreField(x, y+7, 7);
         }
         else if(type == 2)
         {
-            gotoxy(x, y);   cout << "       ";
-            gotoxy(x, y+1); cout << "            ";
-            gotoxy(x, y+2); cout << "            ";
-            gotoxy(x, y+3); cout << "            ";
+            restoreField(x, y,   7);
+            restoreField(x, y+1, 12);
+            restoreField(x, y+2, 12);
+            restoreField(x, y+3, 12);
             if(state == 0)
-            {
-                gotoxy(x-4, y+4); cout << "                   " ;
-            }
+                restoreField(x-4, y+4, 19);
             else
-            {
-                gotoxy(x, y+4); cout << "                     " ;
-            }
-            gotoxy(x, y+5); cout << "            "; 
-            gotoxy(x, y+6); cout << "            ";
-            gotoxy(x, y+7); cout << "            ";
+                restoreField(x,   y+4, 21);
+            restoreField(x, y+5, 12);
+            restoreField(x, y+6, 12);
+            restoreField(x, y+7, 12);
         }
     }
     else
     {
         if(type == 0)
         {
-            gotoxy(x, y);   cout << "      ";
-            gotoxy(x, y+1); cout << "       ";
-            gotoxy(x, y+2); cout << "        ";
-            gotoxy(x, y+3); cout << "       ";
-            gotoxy(x, y+4); cout << "        ";
-            gotoxy(x, y+5); cout << "        ";
-            gotoxy(x, y+6); cout << "         ";
-            gotoxy(x, y+7); cout << "        ";
+            restoreField(x, y,   6);
+            restoreField(x, y+1, 7);
+            restoreField(x, y+2, 8);
+            restoreField(x, y+3, 7);
+            restoreField(x, y+4, 8);
+            restoreField(x, y+5, 8);
+            restoreField(x, y+6, 9);
+            restoreField(x, y+7, 8);
         }
         else if(type == 1)
         {
-            gotoxy(x, y);   cout << "      ";
-            gotoxy(x, y+1); cout << "       ";
-            gotoxy(x, y+2); cout << "        ";
-            gotoxy(x, y+3); cout << "       ";
+            restoreField(x, y,   6);
+            restoreField(x, y+1, 7);
+            restoreField(x, y+2, 8);
+            restoreField(x, y+3, 7);
             if(state == 0)
-            {
-                gotoxy(x-7, y+4); cout << "                     ";
-            }
+                restoreField(x-7,  y+4, 21);
             else
-            {
-                gotoxy(x-10, y+4); cout << "                     ";
-            }
-            gotoxy(x, y+5); cout << "        ";
-            gotoxy(x, y+6); cout << "         ";
-            gotoxy(x, y+7); cout << "        ";
-            
+                restoreField(x-10, y+4, 21);
+            restoreField(x, y+5, 8);
+            restoreField(x, y+6, 9);
+            restoreField(x, y+7, 8);
         }
         else if(type == 2)
         {
-            gotoxy(x, y);   cout << "         ";
-            gotoxy(x, y+1); cout << "          ";
-            gotoxy(x, y+2); cout << "           ";
-            gotoxy(x, y+3); cout << "          ";
+            restoreField(x, y,   9);
+            restoreField(x, y+1, 10);
+            restoreField(x, y+2, 11);
+            restoreField(x, y+3, 10);
             if(state == 0)
-            {
-                gotoxy(x-2, y+4); cout << "                 ";
-            }
+                restoreField(x-2, y+4, 17);
             else
-            {
-                gotoxy(x-9, y+4); cout << "                    ";
-            }
-            gotoxy(x, y+5); cout << "           ";
-            gotoxy(x, y+6); cout << "            ";
-            gotoxy(x, y+7); cout << "           ";
+                restoreField(x-9, y+4, 20);
+            restoreField(x, y+5, 11);
+            restoreField(x, y+6, 12);
+            restoreField(x, y+7, 11);
         }
     }
 }
@@ -931,6 +1290,12 @@ void enemies(int action)
                         enemyX[i] += 1;
                     else
                         enemyX[i] -= 1;
+                    if(!enemySpaceFree(i, enemyX[i], enemyY[i]))
+                    {
+                        if(enemyDir[i]) enemyX[i] -= 1;
+                        else enemyX[i] += 1;
+                        enemyDir[i] = !enemyDir[i];
+                    }
                     printEnemy(enemyX[i], enemyY[i], enemyDir[i], enemyType[i], enemyState[i]);
                 }
             }
@@ -980,6 +1345,25 @@ int enemyHitIndex(int x, int y)
 bool hitsPlayer(int x, int y)
 {
     return (x >= pX - 1 && x <= pX + 12 && y >= pY && y <= pY + 6);
+}
+// True if a one-step move to newPX would push the player's body into a living
+// enemy on the side it's heading toward (dir: 1 = right, 0 = left). Enemies on
+// the far side never block, so the player can always back out of contact.
+bool blockedByEnemy(int newPX, int dir)
+{
+    for(int i = 0; i < enemyCount; i++)
+    {
+        if(!isEnemyAlive[i])
+            continue;
+        bool vOverlap = !(pY + 6 < enemyY[i] || pY > enemyY[i] + 7);
+        bool hOverlap = !(newPX + 12 < enemyX[i] - 1 || newPX - 1 > enemyX[i] + 12);
+        if(vOverlap && hOverlap)
+        {
+            if(dir  && enemyX[i] + 6 >= newPX + 6) return true;   // enemy to the right
+            if(!dir && enemyX[i] + 6 <= newPX + 6) return true;   // enemy to the left
+        }
+    }
+    return false;
 }
 // One place that kills an enemy and keeps every counter/score/board in sync.
 void destroyEnemy(int i)
@@ -1031,8 +1415,7 @@ void printBullet(int x, int y)
 }
 void eraseBullet(int x, int y)
 {
-  gotoxy(x, y);
-  cout << " ";
+  restoreField(x, y, 1);   // repaint the tile the bullet sat on, not a blank
 }
 void makeBulletInactive(int idx)
 {
@@ -1048,6 +1431,13 @@ void moveBullet()
         int step = bulletDir[j] ? 1 : -1;
         int nx = bulletX[j] + step;     // cell the bullet is about to enter
         int ny = bulletY[j];
+
+        if(nx < 1 || nx >= VIEW_W - 1)  // left the visible play area: retire it
+        {
+            eraseBullet(bulletX[j], bulletY[j]);
+            makeBulletInactive(j);
+            continue;
+        }
 
         if(bulletOwner[j])              // ---- player bullet ----
         {
@@ -1066,7 +1456,7 @@ void moveBullet()
                     destroyEnemy(hit);
                 continue;
             }
-            if(getCharAtxy(nx, ny) != ' ')   // wall / platform
+            if(isSolidTile(getCharAtxy(nx, ny)))   // wall / platform
             {
                 eraseBullet(bulletX[j], bulletY[j]);
                 makeBulletInactive(j);
@@ -1079,12 +1469,14 @@ void moveBullet()
             {
                 eraseBullet(bulletX[j], bulletY[j]);
                 makeBulletInactive(j);
-                if(health > 0) health -= 10;
+                health -= HIT_DAMAGE;   // a shot takes 10%, not the whole life
+                if(health < 0) health = 0;
+                lastHitTime = GetTickCount();
                 updateBoard();
                 playerPrint();          // repair the part of the sprite the bullet sat on
                 continue;
             }
-            if(getCharAtxy(nx, ny) != ' ')
+            if(isSolidTile(getCharAtxy(nx, ny)))
             {
                 eraseBullet(bulletX[j], bulletY[j]);
                 makeBulletInactive(j);
@@ -1192,6 +1584,77 @@ void loadStage(int s)
         if((int)fieldRows[r].size() < fieldWidth)
             fieldRows[r] += string(fieldWidth - fieldRows[r].size(), fill);
     }
+
+    decorateField(s);
+}
+
+bool isSolidTile(char c)
+{
+    return c == '.' || c == '=' || c == '#' || c == '-';
+}
+
+void decorateField(int s)
+{
+    int w = fieldWidth;
+    for(int x = 8; x < w - 8; x += 28)
+    {
+        if(rand() % 3 == 0)
+        {
+            int cloudRow = 4 + rand() % 4;
+            fieldRows[cloudRow][x] = '(';
+            fieldRows[cloudRow][x + 1] = '_';
+            fieldRows[cloudRow][x + 2] = '_';
+            fieldRows[cloudRow][x + 3] = ')';
+        }
+    }
+
+    for(int x = 6; x < w - 6; x += 18)
+    {
+        if(rand() % 2 == 0)
+        {
+            fieldRows[GROUND_TOP - 6][x] = '=';
+            fieldRows[GROUND_TOP - 6][x + 1] = '=';
+            fieldRows[GROUND_TOP - 6][x + 2] = '=';
+            fieldRows[GROUND_TOP - 6][x + 3] = '=';
+        }
+    }
+
+    for(int x = 10; x < w - 10; x += 22)
+    {
+        if(rand() % 2 == 0)
+            fieldRows[GROUND_TOP - 1][x] = '$';
+    }
+
+    for(int x = 14; x < w - 14; x += 31)
+    {
+        if(rand() % 2 == 0)
+            fieldRows[GROUND_TOP - 3][x] = '^';
+    }
+}
+
+void collectGems()
+{
+    int worldX = section * VIEW_W + pX;
+    for(int dy = 0; dy <= 6; dy++)
+    {
+        for(int dx = 0; dx <= 12; dx++)
+        {
+            int x = worldX + dx;
+            if(x < 0 || x >= fieldWidth)
+                continue;
+            int row = pY + dy - 3;
+            if(row < 0 || row >= FIELD_ROWS)
+                continue;
+            if(fieldRows[row][x] == '$')
+            {
+                fieldRows[row][x] = ' ';
+                gotoxy(pX + dx, pY + dy); cout << ' ';
+                coins += 1;
+                score += 2;
+                updateBoard();
+            }
+        }
+    }
 }
 void aboutDeveloperScreen(int x, int y)
 {
@@ -1222,14 +1685,18 @@ void aboutDeveloperScreen(int x, int y)
     gotoxy(x,++y);cout << "your son.";
 
     gotoxy(80,16);cout <<"---- Instructions ----";
-    gotoxy(80,18);cout << "Press [SPACE] or [ESC] To Exit";
-    while(true){
-        if(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_ESCAPE)){
-            mainScreen();
-        }
-        Sleep(200);
-    }
-
+    gotoxy(80,17);cout << "Move    : Arrows / A D";
+    gotoxy(80,18);cout << "Jump    : Up / W";
+    gotoxy(80,19);cout << "Sword   : Down / S";
+    gotoxy(80,20);cout << "Shoot   : Space";
+    gotoxy(80,21);cout << "Refill  : R  (" << REFILL_COST << " coins -> " << REFILL_AMOUNT << " ammo)";
+    gotoxy(80,22);cout << "Pause   : P  (R resumes)";
+    gotoxy(80,24);cout << "Press [SPACE] or [ESC] To Exit";
+    while(!(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_ESCAPE)))
+        Sleep(30);
+    while(GetAsyncKeyState(VK_SPACE) || GetAsyncKeyState(VK_ESCAPE))
+        Sleep(30);
+    // return to the menu, which redraws itself
 }
 void gameHeader(int x, int y)
 {
@@ -1277,7 +1744,7 @@ void updateBoard(){
 
     gotoxy(96, 1); 
     for(int i = 0; i < lives; i++)
-        cout << "\3";
+        cout << "+";
 
     gotoxy(112, 1); cout << coins;
     
@@ -1304,28 +1771,34 @@ void setColor(int color)
 }
 void screenSetup(int bufferX,int bufferY, int width, int height, bool cursor)
 {
-    COORD bufferSize;
-    bufferSize.X = bufferX;
-    bufferSize.Y = bufferY;
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
 
-    SMALL_RECT windowSize;
-    windowSize.Left = 0;
-    windowSize.Top = 0;
-    windowSize.Right = width - 1;
-    windowSize.Bottom = height - 1;
-    
-    SetConsoleScreenBufferSize(GetStdHandle(STD_OUTPUT_HANDLE), bufferSize);
-    SetConsoleWindowInfo(GetStdHandle(STD_OUTPUT_HANDLE), TRUE, &windowSize);
+    // A console window can never be wider/taller than its buffer, so resize in
+    // a safe order: collapse the window first, grow the buffer, then open the
+    // window to the exact play size. Buffer == window => no scrollbars, no
+    // clipping of the 120-wide field.
+    SMALL_RECT minWin = {0, 0, 1, 1};
+    SetConsoleWindowInfo(h, TRUE, &minWin);
 
-    RECT rect;
-    GetWindowRect(GetConsoleWindow(), &rect);
-    int winWidth = rect.right - rect.left;
-    int winHeight = rect.bottom - rect.top;
+    COORD bufferSize = { (SHORT)bufferX, (SHORT)bufferY };
+    SetConsoleScreenBufferSize(h, bufferSize);
 
-    SetWindowPos(GetConsoleWindow(), 0, 250, 100, winWidth, winHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    SMALL_RECT windowSize = {0, 0, (SHORT)(width - 1), (SHORT)(height - 1)};
+    SetConsoleWindowInfo(h, TRUE, &windowSize);
+
+    // Lock the window at the game size: drop the sizing frame and maximize box
+    // so it can't be stretched away from the 120x40 layout.
+    HWND hwnd = GetConsoleWindow();
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    style &= ~(WS_MAXIMIZEBOX | WS_SIZEBOX);
+    SetWindowLong(hwnd, GWL_STYLE, style);
+
+    // Position it a little in from the top-left, keeping the size we just set.
+    SetWindowPos(hwnd, NULL, 250, 100, 0, 0,
+                 SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
     CONSOLE_CURSOR_INFO curInfo;
-    GetConsoleCursorInfo(GetStdHandle(STD_OUTPUT_HANDLE), &curInfo);
+    GetConsoleCursorInfo(h, &curInfo);
     curInfo.bVisible = cursor;
-    SetConsoleCursorInfo(GetStdHandle(STD_OUTPUT_HANDLE), &curInfo);
+    SetConsoleCursorInfo(h, &curInfo);
 }
